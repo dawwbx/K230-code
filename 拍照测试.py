@@ -1,5 +1,6 @@
-# K230 摄像头 + 触摸拍照
-# 屏幕上实时预览摄像头画面，右下角有虚拟快门按钮，手指点击拍照存 SD 卡
+# K230 摄像头 + 触摸拍照 + 相片回放
+# 实时预览摄像头画面，右下角快门按钮拍照，左下角回放按钮浏览照片
+# 照片存储到 /data/picture 目录
 # 兼容 01Studio CanMV K230 (ST7701 800x480 + FT5316)
 
 from machine import TOUCH
@@ -11,18 +12,195 @@ import image, time, os
 DISPLAY_WIDTH = 800
 DISPLAY_HEIGHT = 480
 
-# 快门按钮参数（右下角圆形按钮）
+SAVE_DIR = "/data/picture"
+
+# 快门按钮（右下角）
 BTN_X = DISPLAY_WIDTH - 65
 BTN_Y = DISPLAY_HEIGHT - 65
 BTN_R = 45
 
+# 回放按钮（左下角）
+GALLERY_X = 55
+GALLERY_Y = DISPLAY_HEIGHT - 55
+GALLERY_R = 32
+
+# 回放模式导航按钮
+LEFT_X, LEFT_Y = 55, DISPLAY_HEIGHT // 2
+RIGHT_X, RIGHT_Y = DISPLAY_WIDTH - 55, DISPLAY_HEIGHT // 2
+BACK_X, BACK_Y = DISPLAY_WIDTH // 2, DISPLAY_HEIGHT - 55
+
+
+def ensure_dir(path):
+    try:
+        os.listdir(path)
+    except:
+        os.mkdir(path)
+
+
+def get_photos():
+    try:
+        files = os.listdir(SAVE_DIR)
+        photos = [f for f in files if f.endswith('.bmp')]
+        photos.sort()
+        return photos
+    except:
+        return []
+
+
+def draw_circle_btn(img, x, y, r, color, label, pressed=False):
+    rr = r - 4 if pressed else r
+    img.draw_circle(x, y, rr, color=color, thickness=3, fill=True)
+    img.draw_circle(x, y, rr - 5, color=(255, 255, 255), thickness=1)
+    w = len(label) * 8
+    img.draw_string_advanced(x - w // 2, y - 8, 15, label, color=(255, 255, 255))
+
+
+def draw_status_bar(img, text):
+    img.draw_rectangle(0, 0, DISPLAY_WIDTH, 38, color=(0, 0, 180), fill=True)
+    img.draw_string_advanced(12, 6, 18, text, color=(255, 255, 255))
+
+
+def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cached):
+    """返回 (next_mode, photo_count, total_cached)"""
+    img = sensor.snapshot()
+
+    p = tp.read(1)
+    in_btn = False
+    in_gallery = False
+    just_saved = False
+
+    if p:
+        x, y, evt = p[0].x, p[0].y, p[0].event
+
+        dx = x - BTN_X
+        dy = y - BTN_Y
+        in_btn = (dx * dx + dy * dy) <= (BTN_R * BTN_R)
+
+        gx = x - GALLERY_X
+        gy = y - GALLERY_Y
+        in_gallery = (gx * gx + gy * gy) <= (GALLERY_R * GALLERY_R)
+
+        # 快门按下 - 立即在原始画面上存盘（此时还没画任何 UI）
+        if in_btn and evt == 2 and not last_in_btn:
+            photo_count += 1
+            ensure_dir(SAVE_DIR)
+            filename = SAVE_DIR + "/photo_{:04d}.bmp".format(photo_count)
+            img.save(filename)
+            print("SAVED:", filename)
+            total_cached += 1
+            just_saved = True
+
+        # 切换到回放模式
+        if in_gallery and evt == 2 and not last_in_gallery:
+            return "gallery", photo_count, total_cached
+
+        last_in_btn = in_btn
+        last_in_gallery = in_gallery
+
+        if not in_btn and not in_gallery:
+            img.draw_cross(x, y, color=(0, 255, 0), size=10, thickness=2)
+    else:
+        last_in_btn = False
+        last_in_gallery = False
+
+    # 顶部状态栏
+    draw_status_bar(img, "Photos: {}  |  SHOT=save  |  VIEW=gallery".format(total_cached))
+
+    # 快门按钮
+    draw_circle_btn(img, BTN_X, BTN_Y, BTN_R, (220, 30, 30), "SHOT", in_btn)
+    draw_circle_btn(img, GALLERY_X, GALLERY_Y, GALLERY_R, (30, 160, 30), "VIEW", in_gallery)
+
+    # 拍照反馈：温和的边框 + SAVED 文字，不刺眼
+    if just_saved:
+        img.draw_rectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                           color=(255, 255, 255), thickness=8, fill=False)
+        img.draw_string_advanced(DISPLAY_WIDTH // 2 - 36, DISPLAY_HEIGHT // 2 - 14,
+                                 28, "SAVED", color=(255, 255, 255))
+
+    Display.show_image(img)
+    return "camera", photo_count, total_cached
+
+
+def gallery_mode(tp):
+    """浏览已存照片，返回 'camera'"""
+    photos = get_photos()
+
+    if not photos:
+        img = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.RGB565)
+        img.draw_rectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, color=(30, 30, 30), fill=True)
+        img.draw_string_advanced(240, 200, 24, "No photos yet", color=(255, 255, 255))
+        img.draw_string_advanced(200, 250, 18, "Tap anywhere to return", color=(160, 160, 160))
+        Display.show_image(img)
+        # 等待触摸退出，而非死等
+        t0 = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), t0) < 1500:
+            os.exitpoint()
+            p = tp.read(1)
+            if p and p[0].event == 2:
+                break
+            time.sleep_ms(30)
+        return "camera"
+
+    idx = len(photos) - 1  # 从最新的开始
+    canvas = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.RGB565)
+    need_redraw = True
+    last_evt_handled = False
+
+    while True:
+        os.exitpoint()
+
+        # 只在切换照片/首次进入时重绘整张图 - 避免每帧 50ms 的加载开销
+        if need_redraw:
+            canvas.draw_rectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                  color=(0, 0, 0), fill=True)
+            try:
+                photo = image.Image(SAVE_DIR + "/" + photos[idx])
+                canvas.draw_image(photo, 0, 0)
+            except Exception as e:
+                canvas.draw_string_advanced(260, 220, 20, "Load failed: " + str(e),
+                                            color=(255, 100, 100))
+
+            # UI
+            canvas.draw_rectangle(0, DISPLAY_HEIGHT - 46, DISPLAY_WIDTH, 46,
+                                  color=(0, 0, 0), fill=True)
+            info = "  {}/{}   {}".format(idx + 1, len(photos), photos[idx])
+            canvas.draw_string_advanced(8, DISPLAY_HEIGHT - 38, 16, info, color=(255, 255, 255))
+
+            canvas.draw_circle(LEFT_X, LEFT_Y, 28, color=(0, 100, 200), thickness=3, fill=True)
+            canvas.draw_string_advanced(LEFT_X - 10, LEFT_Y - 16, 30, "<", color=(255, 255, 255))
+
+            canvas.draw_circle(RIGHT_X, RIGHT_Y, 28, color=(0, 100, 200), thickness=3, fill=True)
+            canvas.draw_string_advanced(RIGHT_X - 10, RIGHT_Y - 16, 30, ">", color=(255, 255, 255))
+
+            canvas.draw_circle(BACK_X, BACK_Y, 40, color=(220, 100, 30), thickness=3, fill=True)
+            canvas.draw_string_advanced(BACK_X - 26, BACK_Y - 12, 22, "BACK", color=(255, 255, 255))
+
+            Display.show_image(img=canvas)
+            need_redraw = False
+
+        p = tp.read(1)
+        if p:
+            x, y, evt = p[0].x, p[0].y, p[0].event
+            if evt == 2 and not last_evt_handled:
+                last_evt_handled = True
+                if ((x - LEFT_X) ** 2 + (y - LEFT_Y) ** 2) <= 900:
+                    idx = (idx - 1) % len(photos)
+                    need_redraw = True
+                elif ((x - RIGHT_X) ** 2 + (y - RIGHT_Y) ** 2) <= 900:
+                    idx = (idx + 1) % len(photos)
+                    need_redraw = True
+                elif ((x - BACK_X) ** 2 + (y - BACK_Y) ** 2) <= 1600:
+                    return "camera"
+        else:
+            last_evt_handled = False
+
+        time.sleep_ms(20)
+
+
 def main():
     os.exitpoint(os.EXITPOINT_ENABLE)
-
-    # ---- 显示 ----
     Display.init(Display.ST7701, width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT, to_ide=False)
 
-    # ---- Sensor（单通道 RGB565，兼容 show_image）----
     sensor = Sensor()
     sensor.reset()
     sensor.set_framesize(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT)
@@ -32,79 +210,36 @@ def main():
     sensor.run()
 
     tp = TOUCH(0)
+    # 续编号：避免覆盖已存的照片
+    existing = get_photos()
     photo_count = 0
-    last_in_btn = False       # 防抖：上一次是否在按钮内
-    flash_timer = 0           # 拍照闪光计时器
+    for f in existing:
+        try:
+            n = int(f.replace("photo_", "").replace(".bmp", ""))
+            if n > photo_count:
+                photo_count = n
+        except:
+            pass
+    last_in_btn = False
+    last_in_gallery = False
+    mode = "camera"
+    # 缓存照片数量，避免每帧都 listdir
+    total_cached = len(existing)
 
     try:
         while True:
             os.exitpoint()
-            img = sensor.snapshot()
 
-            # ---- 顶部状态栏 ----
-            img.draw_rectangle(0, 0, DISPLAY_WIDTH, 38, color=(0, 0, 180), fill=True)
-            status = "Photos: {}  |  Tap red button to shoot".format(photo_count)
-            img.draw_string_advanced(12, 6, 20, status, color=(255, 255, 255))
-
-            # ---- 读取触摸 ----
-            p = tp.read(1)
-
-            if p:
-                x, y, evt = p[0].x, p[0].y, p[0].event
-
-                # 判断是否在快门按钮圆内
-                dx = x - BTN_X
-                dy = y - BTN_Y
-                in_btn = (dx * dx + dy * dy) <= (BTN_R * BTN_R)
-
-                if in_btn:
-                    # 按钮按下效果：缩小一圈
-                    r = BTN_R - 4
-                else:
-                    r = BTN_R
-
-                # 按下快门（DOWN 事件 + 在按钮内 + 之前不在按钮内）
-                if in_btn and evt == 2 and not last_in_btn:
-                    photo_count += 1
-
-                    # 存 SD 卡，没有就存 Flash
-                    try:
-                        _ = os.listdir("/sdcard")
-                        filename = "/sdcard/photo_{:04d}.jpg".format(photo_count)
-                    except:
-                        filename = "/flash/photo_{:04d}.jpg".format(photo_count)
-
-                    img.save(filename)
-                    print("SAVED:", filename)
-                    flash_timer = 6   # 触发闪光效果
-
-                last_in_btn = in_btn
-
-                # 不在按钮区域时画十字准星（辅助取景）
-                if not in_btn:
-                    img.draw_cross(x, y, color=(0, 255, 0), size=10, thickness=2)
-            else:
+            if mode == "camera":
+                mode, photo_count, total_cached = camera_mode(
+                    sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cached)
                 last_in_btn = False
-                r = BTN_R
+                last_in_gallery = False
 
-            # ---- 快门按钮 UI ----
-            # 外圈（红色，按下时略缩小）
-            img.draw_circle(BTN_X, BTN_Y, r, color=(220, 30, 30), thickness=4, fill=True)
-            # 内圈装饰
-            img.draw_circle(BTN_X, BTN_Y, r - 6, color=(255, 255, 255), thickness=2)
-            img.draw_circle(BTN_X, BTN_Y, r - 10, color=(220, 30, 30), thickness=1)
-            # 标签
-            img.draw_string_advanced(BTN_X - 14, BTN_Y - 7, 14, "SHOT", color=(255, 255, 255))
-
-            # ---- 闪光效果 ----
-            if flash_timer > 0:
-                flash_timer -= 1
-                if flash_timer >= 3:
-                    img.draw_rectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                       color=(255, 255, 255), fill=True)
-
-            Display.show_image(img)
-            time.sleep_ms(30)
+            elif mode == "gallery":
+                mode = gallery_mode(tp)
+                # 从回放回到拍照时刷新计数
+                total_cached = len(get_photos())
 
     except KeyboardInterrupt:
         print("stopped")
@@ -114,5 +249,6 @@ def main():
         sensor.stop()
         Display.deinit()
         MediaManager.deinit()
+
 
 main()
