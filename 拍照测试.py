@@ -97,7 +97,9 @@ def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cac
         last_in_btn = in_btn
         last_in_gallery = in_gallery
 
-        if not in_btn and not in_gallery:
+        # 只在按下事件画十字 - 某些 CanMV 固件会回报幽灵悬停/释放点，
+        # 不过滤的话满屏会乱冒绿十字
+        if not in_btn and not in_gallery and evt == 2:
             img.draw_cross(x, y, color=(0, 255, 0), size=10, thickness=2)
     else:
         last_in_btn = False
