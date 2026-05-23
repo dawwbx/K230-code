@@ -1,0 +1,10 @@
+# 串口日志
+1.txt
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# CanMV 阈值配置（运行时存到 SD 卡，不应入仓库）
+*.cfg
