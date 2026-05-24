@@ -8,3 +8,10 @@ __pycache__/
 
 # CanMV 阈值配置（运行时存到 SD 卡，不应入仓库）
 *.cfg
+
+# 训练数据（个人拍摄、体积大、可重生成）
+dataset_tools/dataset/
+dataset_tools/dataset_for_aicube*.zip
+
+# 训练好的模型（从 AI Cube 下载，不入版本控制）
+*.kmodel
