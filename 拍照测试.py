@@ -3,7 +3,7 @@
 # 照片存储到 /data/picture 目录
 # 兼容 01Studio CanMV K230 (ST7701 800x480 + FT5316)
 
-from machine import TOUCH
+from machine import TOUCH, Pin, FPIOA
 from media.display import Display
 from media.sensor import Sensor
 from media.media import MediaManager
@@ -13,6 +13,9 @@ DISPLAY_WIDTH = 800
 DISPLAY_HEIGHT = 480
 
 SAVE_DIR = "/data/picture"
+
+# 01Studio K230 板载 KEY = GPIO21 (按下=低)
+KEY_PIN = 21
 
 # 快门按钮（右下角）
 BTN_X = DISPLAY_WIDTH - 65
@@ -28,6 +31,18 @@ GALLERY_R = 32
 LEFT_X, LEFT_Y = 55, DISPLAY_HEIGHT // 2
 RIGHT_X, RIGHT_Y = DISPLAY_WIDTH - 55, DISPLAY_HEIGHT // 2
 BACK_X, BACK_Y = DISPLAY_WIDTH // 2, DISPLAY_HEIGHT - 55
+
+# 回放模式删除按钮（右下，红色，比 BACK 小避免误触）
+DEL_X, DEL_Y, DEL_R = DISPLAY_WIDTH - 60, DISPLAY_HEIGHT - 55, 32
+
+# 删除确认弹窗
+DLG_W, DLG_H = 440, 200
+DLG_X = (DISPLAY_WIDTH - DLG_W) // 2
+DLG_Y = (DISPLAY_HEIGHT - DLG_H) // 2
+DLG_YES_X = DLG_X + 110
+DLG_NO_X = DLG_X + DLG_W - 110
+DLG_BTN_Y = DLG_Y + DLG_H - 45
+DLG_BTN_R = 32
 
 
 def ensure_dir(path):
@@ -60,9 +75,14 @@ def draw_status_bar(img, text):
     img.draw_string_advanced(12, 6, 18, text, color=(255, 255, 255))
 
 
-def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cached):
-    """返回 (next_mode, photo_count, total_cached)"""
+def camera_mode(sensor, tp, key, photo_count,
+                last_in_btn, last_in_gallery, last_key_pressed, total_cached):
+    """返回 (next_mode, photo_count, last_key_pressed, total_cached)"""
     img = sensor.snapshot()
+
+    # 板载 KEY 边沿检测（按下=0）
+    key_pressed_now = (key is not None) and (key.value() == 0)
+    key_shutter = key_pressed_now and not last_key_pressed
 
     p = tp.read(1)
     in_btn = False
@@ -80,19 +100,11 @@ def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cac
         gy = y - GALLERY_Y
         in_gallery = (gx * gx + gy * gy) <= (GALLERY_R * GALLERY_R)
 
-        # 快门按下 - 立即在原始画面上存盘（此时还没画任何 UI）
-        if in_btn and evt == 2 and not last_in_btn:
-            photo_count += 1
-            ensure_dir(SAVE_DIR)
-            filename = SAVE_DIR + "/photo_{:04d}.bmp".format(photo_count)
-            img.save(filename)
-            print("SAVED:", filename)
-            total_cached += 1
-            just_saved = True
+        touch_shutter = in_btn and evt == 2 and not last_in_btn
 
         # 切换到回放模式
         if in_gallery and evt == 2 and not last_in_gallery:
-            return "gallery", photo_count, total_cached
+            return "gallery", photo_count, key_pressed_now, total_cached
 
         last_in_btn = in_btn
         last_in_gallery = in_gallery
@@ -104,12 +116,23 @@ def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cac
     else:
         last_in_btn = False
         last_in_gallery = False
+        touch_shutter = False
+
+    # 触摸或 KEY 任一边沿都触发快门 - 立即在原始画面上存盘（此时还没画任何 UI）
+    if touch_shutter or key_shutter:
+        photo_count += 1
+        ensure_dir(SAVE_DIR)
+        filename = SAVE_DIR + "/photo_{:04d}.bmp".format(photo_count)
+        img.save(filename)
+        print("SAVED:", filename, "(KEY)" if key_shutter else "(TOUCH)")
+        total_cached += 1
+        just_saved = True
 
     # 顶部状态栏
     draw_status_bar(img, "Photos: {}  |  SHOT=save  |  VIEW=gallery".format(total_cached))
 
-    # 快门按钮
-    draw_circle_btn(img, BTN_X, BTN_Y, BTN_R, (220, 30, 30), "SHOT", in_btn)
+    # 快门按钮（KEY 按住时也高亮）
+    draw_circle_btn(img, BTN_X, BTN_Y, BTN_R, (220, 30, 30), "SHOT", in_btn or key_pressed_now)
     draw_circle_btn(img, GALLERY_X, GALLERY_Y, GALLERY_R, (30, 160, 30), "VIEW", in_gallery)
 
     # 拍照反馈：温和的边框 + SAVED 文字，不刺眼
@@ -120,7 +143,7 @@ def camera_mode(sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cac
                                  28, "SAVED", color=(255, 255, 255))
 
     Display.show_image(img)
-    return "camera", photo_count, total_cached
+    return "camera", photo_count, key_pressed_now, total_cached
 
 
 def gallery_mode(tp):
@@ -147,6 +170,7 @@ def gallery_mode(tp):
     canvas = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.RGB565)
     need_redraw = True
     last_evt_handled = False
+    confirm_delete = False  # 删除确认弹窗状态
 
     while True:
         os.exitpoint()
@@ -177,6 +201,28 @@ def gallery_mode(tp):
             canvas.draw_circle(BACK_X, BACK_Y, 40, color=(220, 100, 30), thickness=3, fill=True)
             canvas.draw_string_advanced(BACK_X - 26, BACK_Y - 12, 22, "BACK", color=(255, 255, 255))
 
+            canvas.draw_circle(DEL_X, DEL_Y, DEL_R, color=(220, 30, 30), thickness=3, fill=True)
+            canvas.draw_string_advanced(DEL_X - 18, DEL_Y - 10, 18, "DEL", color=(255, 255, 255))
+
+            # 删除确认覆盖层（modal，画在所有 UI 之上）
+            if confirm_delete:
+                canvas.draw_rectangle(DLG_X, DLG_Y, DLG_W, DLG_H,
+                                      color=(40, 40, 40), fill=True)
+                canvas.draw_rectangle(DLG_X, DLG_Y, DLG_W, DLG_H,
+                                      color=(220, 30, 30), thickness=3, fill=False)
+                canvas.draw_string_advanced(DLG_X + 70, DLG_Y + 22, 26,
+                                            "Delete this photo?", color=(255, 255, 255))
+                canvas.draw_string_advanced(DLG_X + 20, DLG_Y + 70, 18,
+                                            photos[idx], color=(180, 180, 180))
+                canvas.draw_circle(DLG_YES_X, DLG_BTN_Y, DLG_BTN_R,
+                                   color=(220, 30, 30), thickness=3, fill=True)
+                canvas.draw_string_advanced(DLG_YES_X - 24, DLG_BTN_Y - 12, 22,
+                                            "YES", color=(255, 255, 255))
+                canvas.draw_circle(DLG_NO_X, DLG_BTN_Y, DLG_BTN_R,
+                                   color=(80, 80, 80), thickness=3, fill=True)
+                canvas.draw_string_advanced(DLG_NO_X - 18, DLG_BTN_Y - 12, 22,
+                                            "NO", color=(255, 255, 255))
+
             Display.show_image(img=canvas)
             need_redraw = False
 
@@ -185,14 +231,36 @@ def gallery_mode(tp):
             x, y, evt = p[0].x, p[0].y, p[0].event
             if evt == 2 and not last_evt_handled:
                 last_evt_handled = True
-                if ((x - LEFT_X) ** 2 + (y - LEFT_Y) ** 2) <= 900:
-                    idx = (idx - 1) % len(photos)
-                    need_redraw = True
-                elif ((x - RIGHT_X) ** 2 + (y - RIGHT_Y) ** 2) <= 900:
-                    idx = (idx + 1) % len(photos)
-                    need_redraw = True
-                elif ((x - BACK_X) ** 2 + (y - BACK_Y) ** 2) <= 1600:
-                    return "camera"
+                if confirm_delete:
+                    # modal：只响应 YES / NO，点弹窗外不做任何事
+                    if ((x - DLG_YES_X) ** 2 + (y - DLG_BTN_Y) ** 2) <= DLG_BTN_R * DLG_BTN_R:
+                        try:
+                            os.remove(SAVE_DIR + "/" + photos[idx])
+                            print("DELETED:", photos[idx])
+                        except Exception as e:
+                            print("Delete failed:", e)
+                        photos = get_photos()
+                        if not photos:
+                            return "camera"
+                        if idx >= len(photos):
+                            idx = len(photos) - 1
+                        confirm_delete = False
+                        need_redraw = True
+                    elif ((x - DLG_NO_X) ** 2 + (y - DLG_BTN_Y) ** 2) <= DLG_BTN_R * DLG_BTN_R:
+                        confirm_delete = False
+                        need_redraw = True
+                else:
+                    if ((x - LEFT_X) ** 2 + (y - LEFT_Y) ** 2) <= 900:
+                        idx = (idx - 1) % len(photos)
+                        need_redraw = True
+                    elif ((x - RIGHT_X) ** 2 + (y - RIGHT_Y) ** 2) <= 900:
+                        idx = (idx + 1) % len(photos)
+                        need_redraw = True
+                    elif ((x - BACK_X) ** 2 + (y - BACK_Y) ** 2) <= 1600:
+                        return "camera"
+                    elif ((x - DEL_X) ** 2 + (y - DEL_Y) ** 2) <= DEL_R * DEL_R:
+                        confirm_delete = True
+                        need_redraw = True
         else:
             last_evt_handled = False
 
@@ -212,6 +280,16 @@ def main():
     sensor.run()
 
     tp = TOUCH(0)
+
+    # 板载 KEY。FPIOA 复用要先设好
+    fpioa = FPIOA()
+    key = None
+    try:
+        fpioa.set_function(KEY_PIN, FPIOA.GPIO21)
+        key = Pin(KEY_PIN, Pin.IN, Pin.PULL_UP)
+    except Exception as e:
+        print("KEY init failed:", e)
+
     # 续编号：避免覆盖已存的照片
     existing = get_photos()
     photo_count = 0
@@ -224,6 +302,7 @@ def main():
             pass
     last_in_btn = False
     last_in_gallery = False
+    last_key_pressed = False
     mode = "camera"
     # 缓存照片数量，避免每帧都 listdir
     total_cached = len(existing)
@@ -233,8 +312,9 @@ def main():
             os.exitpoint()
 
             if mode == "camera":
-                mode, photo_count, total_cached = camera_mode(
-                    sensor, tp, photo_count, last_in_btn, last_in_gallery, total_cached)
+                mode, photo_count, last_key_pressed, total_cached = camera_mode(
+                    sensor, tp, key, photo_count,
+                    last_in_btn, last_in_gallery, last_key_pressed, total_cached)
                 last_in_btn = False
                 last_in_gallery = False
 
@@ -242,6 +322,7 @@ def main():
                 mode = gallery_mode(tp)
                 # 从回放回到拍照时刷新计数
                 total_cached = len(get_photos())
+                last_key_pressed = (key is not None) and (key.value() == 0)
 
     except KeyboardInterrupt:
         print("stopped")
