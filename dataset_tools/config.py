@@ -1,8 +1,9 @@
 # ============================================================
 # 数据集工具 - 中心化配置
-# 加新类别就在这里改，其他脚本会自动跟上
+# 类别本身存在 classes.json 里（HSV 用 5_hsv_picker.py 调色）
 # ============================================================
 import os
+import json
 import numpy as np
 
 # ---- 路径 ----
@@ -10,14 +11,15 @@ DEFAULT_INPUT_DIR = r"C:\Users\pc\Desktop\p"   # 默认输入文件夹（手机�
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "dataset")
 IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 XML_DIR    = os.path.join(OUTPUT_DIR, "xml")
-ZIP_NAME   = "dataset_for_aicube.zip"          # 输出 ZIP 名
+ZIP_NAME   = "dataset_for_aicube.zip"
+CLASSES_JSON = os.path.join(os.path.dirname(__file__), "classes.json")
 
 
 def get_input_dir():
     """返回当前要使用的输入文件夹。
        - 默认路径存在 -> 直接返回
        - 默认路径不存在 -> 在终端提示用户输入路径
-       - 用户输入 'q' 或留空 -> 返回 None（调用方应中止）
+       - 用户输入 'q' 或留空 -> 返回 None
     """
     if os.path.isdir(DEFAULT_INPUT_DIR):
         return DEFAULT_INPUT_DIR
@@ -30,45 +32,12 @@ def get_input_dir():
             return p
         print(f"  [WARN] not a directory: {p}")
 
+
 # ---- 图像处理 ----
 MAX_SIZE = 1280   # 长边压到这个像素以内（AI Cube 单文件 10MB 限制）
-
-# ---- 类别定义 ----
-# 想识别几样东西，就在这个列表里加几个 dict
-# name        : Pascal VOC XML 里的类别名
-# hsv_lower   : HSV 下限（OpenCV 格式，H 是 0~180）
-# hsv_upper   : HSV 上限
-# min_ratio   : 最小面积比（< 这个值会被忽略，防止小噪点）
-# max_ratio   : 最大面积比（> 这个值会被忽略，防止把背景框进来）
-# kernel      : 形态学闭运算核大小（越大越能把碎块粘起来）
-# multi_boxes : True = 同一类可有多个目标；False = 只取最大的那个
-CLASSES = [
-    {
-        "name":        "plate",
-        "hsv_lower":   np.array([10,  30,  80]),
-        "hsv_upper":   np.array([35, 200, 240]),
-        "min_ratio":   0.005,
-        "max_ratio":   0.6,
-        "kernel":      25,
-        "multi_boxes": False,
-    },
-    # 想加第二类就把下面解开注释，改成你的物体颜色
-    # {
-    #     "name":        "ball",
-    #     "hsv_lower":   np.array([20, 100, 100]),
-    #     "hsv_upper":   np.array([35, 255, 255]),
-    #     "min_ratio":   0.002,
-    #     "max_ratio":   0.3,
-    #     "kernel":      15,
-    #     "multi_boxes": True,
-    # },
-]
-
-# ---- 自动标注后的余量（向四周扩 N 像素，避免框太紧）----
-BOX_PADDING = 6
+BOX_PADDING = 6   # 自动标注框向外扩 N 像素
 
 # ---- 可疑判定（labelfix 用）----
-# 单个框面积比例不在这个范围内的图会被标记为可疑
 SUSPICIOUS_MIN = 0.005
 SUSPICIOUS_MAX = 0.60
 
@@ -76,5 +45,93 @@ SUSPICIOUS_MAX = 0.60
 WIN_MAX = 1100
 
 
+# ---- 类别加载 / 保存 ----
+_DEFAULT_CLASSES = [
+    {
+        "name":        "plate",
+        "hsv_lower":   [10,  30,  80],
+        "hsv_upper":   [35, 200, 240],
+        "min_ratio":   0.005,
+        "max_ratio":   0.6,
+        "kernel":      25,
+        "multi_boxes": False,
+    },
+]
+
+
+def _load_classes_raw():
+    """从 JSON 文件读 classes；不存在则用默认值生成。"""
+    if not os.path.exists(CLASSES_JSON):
+        with open(CLASSES_JSON, 'w', encoding='utf-8') as f:
+            json.dump(_DEFAULT_CLASSES, f, indent=2, ensure_ascii=False)
+        return list(_DEFAULT_CLASSES)
+    with open(CLASSES_JSON, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _to_runtime(raw_list):
+    """JSON 里 hsv 是 list，运行时转 numpy.array。"""
+    out = []
+    for c in raw_list:
+        d = dict(c)
+        d['hsv_lower'] = np.array(c['hsv_lower'], dtype=np.uint8)
+        d['hsv_upper'] = np.array(c['hsv_upper'], dtype=np.uint8)
+        out.append(d)
+    return out
+
+
+CLASSES = _to_runtime(_load_classes_raw())
+
+
 def class_names():
     return [c["name"] for c in CLASSES]
+
+
+def save_class(cls_dict, target_idx=None):
+    """把单个类别写回 classes.json。
+       target_idx=None: 同名覆盖，否则末尾追加
+       target_idx=int : 替换第 idx 个
+    """
+    raw = _load_classes_raw()
+    # numpy -> list 以便 JSON 序列化
+    s = dict(cls_dict)
+    if isinstance(s.get('hsv_lower'), np.ndarray):
+        s['hsv_lower'] = s['hsv_lower'].tolist()
+    if isinstance(s.get('hsv_upper'), np.ndarray):
+        s['hsv_upper'] = s['hsv_upper'].tolist()
+    # 确保类型干净
+    s['hsv_lower'] = [int(v) for v in s['hsv_lower']]
+    s['hsv_upper'] = [int(v) for v in s['hsv_upper']]
+    s['min_ratio'] = float(s.get('min_ratio', 0.005))
+    s['max_ratio'] = float(s.get('max_ratio', 0.6))
+    s['kernel']    = int(s.get('kernel', 25))
+    s['multi_boxes'] = bool(s.get('multi_boxes', False))
+
+    if target_idx is not None:
+        raw[target_idx] = s
+    else:
+        for i, c in enumerate(raw):
+            if c['name'] == s['name']:
+                raw[i] = s
+                break
+        else:
+            raw.append(s)
+
+    with open(CLASSES_JSON, 'w', encoding='utf-8') as f:
+        json.dump(raw, f, indent=2, ensure_ascii=False)
+
+    global CLASSES
+    CLASSES = _to_runtime(raw)
+
+
+def delete_class(target_idx):
+    """删除第 idx 个类别。"""
+    raw = _load_classes_raw()
+    if 0 <= target_idx < len(raw):
+        del raw[target_idx]
+        with open(CLASSES_JSON, 'w', encoding='utf-8') as f:
+            json.dump(raw, f, indent=2, ensure_ascii=False)
+        global CLASSES
+        CLASSES = _to_runtime(raw)
+        return True
+    return False

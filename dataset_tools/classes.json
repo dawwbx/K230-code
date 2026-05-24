@@ -1,0 +1,11 @@
+[
+  {
+    "name": "plate",
+    "hsv_lower": [10, 30, 80],
+    "hsv_upper": [35, 200, 240],
+    "min_ratio": 0.005,
+    "max_ratio": 0.6,
+    "kernel": 25,
+    "multi_boxes": false
+  }
+]

@@ -17,6 +17,7 @@ echo   [1] Auto-label  (p\*.jpg -^> dataset)
 echo   [2] Manual fix  (review/edit boxes)
 echo   [3] Pack ZIP    (upload to AI Cube)
 echo   [4] Clear dataset folder
+echo   [5] HSV picker  (tune/add a class by clicking on the object)
 echo   [Q] Quit
 echo.
 set /p choice="Choose: "
@@ -25,6 +26,7 @@ if /i "%choice%"=="1" goto AUTO
 if /i "%choice%"=="2" goto FIX
 if /i "%choice%"=="3" goto PACK
 if /i "%choice%"=="4" goto CLEAR
+if /i "%choice%"=="5" goto PICK
 if /i "%choice%"=="q" exit /b
 goto MENU
 
@@ -45,6 +47,13 @@ goto MENU
 :PACK
 echo.
 python 3_pack_for_aicube.py
+echo.
+pause
+goto MENU
+
+:PICK
+echo.
+python 5_hsv_picker.py
 echo.
 pause
 goto MENU

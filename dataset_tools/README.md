@@ -17,38 +17,77 @@
 [1] Auto-label   自动标注 p\*.jpg → dataset/
 [2] Manual fix   手动检查/修正每张图
 [3] Pack ZIP     生成 dataset_for_aicube.zip
-[4] Clear        清空 dataset 文件夹
+[4] Clear        清空 dataset 文件夹（可选连带清 p/ 原图）
+[5] HSV picker   交互式调色，不用懂 HSV 数值
 [Q] Quit
 ```
 
 典型流程：拍照 → 复制到 `p\` → 运行 1 → 运行 2 改错 → 运行 3 上传。
+**新加类别**：拍照 → 运行 5 调色 → 运行 1 → 运行 2 → 运行 3。
 
 ## 多类别支持
 
-要识别多种物体？打开 `config.py`，在 `CLASSES` 列表里加 dict：
+类别配置存在 `classes.json` 里（首次运行自动生成）。**推荐用 `[5] HSV picker` 调色**，不用手动写 HSV 数值。
 
-```python
-CLASSES = [
-    {
-        "name":        "plate",
-        "hsv_lower":   np.array([10,  30,  80]),
-        "hsv_upper":   np.array([35, 200, 240]),
-        "min_ratio":   0.005,
-        "max_ratio":   0.6,
-        "kernel":      25,
-        "multi_boxes": False,   # 每张图只有 1 个 plate
-    },
-    {
-        "name":        "ball",
-        "hsv_lower":   np.array([20, 100, 100]),
-        "hsv_upper":   np.array([35, 255, 255]),
-        ...
-        "multi_boxes": True,    # 一张图可能有多个 ball
-    },
+如果你熟悉 HSV，也可以直接编辑 `classes.json`：
+
+```json
+[
+  {
+    "name": "plate",
+    "hsv_lower": [10, 30, 80],
+    "hsv_upper": [35, 200, 240],
+    "min_ratio": 0.005,
+    "max_ratio": 0.6,
+    "kernel": 25,
+    "multi_boxes": false
+  }
 ]
 ```
 
-自动标注、手动修正、打包脚本都会自动跟着读，**不用动其他文件**。
+字段说明：
+- `name`: Pascal VOC XML 里的类别名（英文，不要有空格）
+- `hsv_lower / hsv_upper`: HSV 颜色阈值（H 是 0~180）
+- `min_ratio / max_ratio`: 框面积占整图的范围（过滤噪点 / 误检整画面）
+- `kernel`: 形态学闭运算核大小（值越大越能粘起碎块）
+- `multi_boxes`: 一张图能不能有多个同类目标
+
+## HSV picker 使用说明（选项 5）
+
+调色器的目标：让你**点几下目标物体就能教会程序认它的颜色**，不用懂 HSV 是啥。
+
+### 启动后做什么
+1. 终端先列出现有类别，让你选：
+   - 输数字 → 重新调那个类别的颜色
+   - 输 `n` → 新建类别（要起个英文名）
+   - 输 `q` → 退出
+2. 自动从 `p/` 文件夹里找一张照片打开
+
+### 操作键
+
+| 键 | 作用 |
+|---|---|
+| **左键拖拽** | 在目标物体上框一个矩形 → 程序自动算 HSV 范围 |
+| **M** | 切换 mask 高亮（绿色覆盖 = 当前 HSV 能认出来的像素，看是否把整个目标都覆盖了） |
+| **+** | 放宽容差（覆盖更多像素，但可能误认背景） |
+| **-** | 收紧容差（更精准，但可能漏掉目标边缘） |
+| **N** | 换下一张样品图，看 HSV 在其它角度/光线下还认不认 |
+| **S** | 保存 → 终端会问你 "一张图能不能有多个？" |
+| **Q / ESC** | 退出不保存 |
+
+### 推荐操作流程
+1. 启动 picker，选要调的类别
+2. 在物体最纯色的部分（避开边缘和孔）**拖个矩形**
+3. 看绿色 mask：把整个目标都覆盖了吗？背景有没有大面积绿掉？
+4. **覆盖不全** → 按 `+` 放宽；**误覆盖背景** → 按 `-` 收紧
+5. 觉得差不多了，按 `N` 翻几张样品图验证（光线/角度变了还能认吗？）
+6. 满意按 `S` 保存
+
+### 容易踩的坑
+- **物体表面有反光/阴影** → 拖框时避开高光区，否则 HSV 范围会被拉得太宽
+- **拖到了边缘** → 边缘像素一半是物体一半是背景，污染颜色统计。拖框时往物体内部 缩 5~10 像素
+- **颜色变化太大（一会儿亮一会儿暗）** → HSV 阈值本身不擅长，可能要靠人工 labelfix 补救
+- **目标是红色** → 红色在 HSV 里跨越 0 和 180，picker 目前不处理 wrap，可能效果差
 
 ## labelfix 详细使用说明
 
@@ -144,10 +183,12 @@ labels.txt
 ```
 dataset_tools/
 ├── 开始.bat                # 一键入口
-├── config.py               # 所有可调参数
+├── config.py               # 路径/常量配置
+├── classes.json            # 类别定义（HSV picker 写入）
 ├── 1_auto_label.py         # HSV 自动标注
 ├── 4_labelfix.py           # 手动检查/修正
 ├── 3_pack_for_aicube.py    # 打包 ZIP
+├── 5_hsv_picker.py         # 交互式调色
 ├── README.md
 ├── dataset/                # 自动生成
 │   ├── images/
