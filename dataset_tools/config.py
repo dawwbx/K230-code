@@ -6,11 +6,29 @@ import os
 import numpy as np
 
 # ---- 路径 ----
-INPUT_DIR  = r"C:\Users\pc\Desktop\p"          # 手机拍的原图
+DEFAULT_INPUT_DIR = r"C:\Users\pc\Desktop\p"   # 默认输入文件夹（手机拍的原图）
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "dataset")
 IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 XML_DIR    = os.path.join(OUTPUT_DIR, "xml")
 ZIP_NAME   = "dataset_for_aicube.zip"          # 输出 ZIP 名
+
+
+def get_input_dir():
+    """返回当前要使用的输入文件夹。
+       - 默认路径存在 -> 直接返回
+       - 默认路径不存在 -> 在终端提示用户输入路径
+       - 用户输入 'q' 或留空 -> 返回 None（调用方应中止）
+    """
+    if os.path.isdir(DEFAULT_INPUT_DIR):
+        return DEFAULT_INPUT_DIR
+    print(f"[INFO] default folder not found: {DEFAULT_INPUT_DIR}")
+    while True:
+        p = input("Enter input folder path (or 'q' to quit): ").strip().strip('"').strip("'")
+        if not p or p.lower() == 'q':
+            return None
+        if os.path.isdir(p):
+            return p
+        print(f"  [WARN] not a directory: {p}")
 
 # ---- 图像处理 ----
 MAX_SIZE = 1280   # 长边压到这个像素以内（AI Cube 单文件 10MB 限制）

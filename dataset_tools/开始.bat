@@ -8,7 +8,7 @@ echo ============================================
 echo   K230 dataset workflow
 echo ============================================
 echo.
-echo   Source folder: C:\Users\pc\Desktop\p
+echo   Source folder: C:\Users\pc\Desktop\p  (auto-prompt if missing)
 echo.
 echo   [1] Auto-label  (p\*.jpg  ->  dataset)
 echo   [2] Manual fix  (review/edit boxes)

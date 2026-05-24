@@ -99,6 +99,11 @@ def detect_one_class(img_bgr, cls):
 
 
 def main():
+    input_dir = C.get_input_dir()
+    if input_dir is None:
+        print("Aborted (no input folder).")
+        return
+
     os.makedirs(C.IMAGES_DIR, exist_ok=True)
     os.makedirs(C.XML_DIR, exist_ok=True)
 
@@ -109,13 +114,14 @@ def main():
 
     files = []
     for ext in ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG'):
-        files.extend(Path(C.INPUT_DIR).glob(ext))
+        files.extend(Path(input_dir).glob(ext))
     files = sorted(set(files))
 
     if not files:
-        print(f"[ERROR] no images in {C.INPUT_DIR}")
+        print(f"[ERROR] no images in {input_dir}")
         return
 
+    print(f"Input folder   : {input_dir}")
     print(f"Found {len(files)} images. Classes: {C.class_names()}")
     print()
 
