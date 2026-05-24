@@ -15,3 +15,6 @@ dataset_tools/dataset_for_aicube*.zip
 
 # 训练好的模型（从 AI Cube 下载，不入版本控制）
 *.kmodel
+
+# 数据集工具运行时记录的上次输入路径（本机状态，不应入仓库）
+dataset_tools/.last_input_dir

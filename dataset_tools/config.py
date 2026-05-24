@@ -13,22 +13,55 @@ IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 XML_DIR    = os.path.join(OUTPUT_DIR, "xml")
 ZIP_NAME   = "dataset_for_aicube.zip"
 CLASSES_JSON = os.path.join(os.path.dirname(__file__), "classes.json")
+LAST_INPUT_FILE = os.path.join(os.path.dirname(__file__), ".last_input_dir")
+
+
+def _save_last_input(path):
+    try:
+        with open(LAST_INPUT_FILE, 'w', encoding='utf-8') as f:
+            f.write(path)
+    except OSError:
+        pass
+
+
+def peek_last_input_dir():
+    """读取上次实际使用的输入文件夹（不提示用户）。
+       返回路径字符串或 None。"""
+    if os.path.exists(LAST_INPUT_FILE):
+        try:
+            with open(LAST_INPUT_FILE, 'r', encoding='utf-8') as f:
+                p = f.read().strip()
+                if p and os.path.isdir(p):
+                    return p
+        except OSError:
+            pass
+    if os.path.isdir(DEFAULT_INPUT_DIR):
+        return DEFAULT_INPUT_DIR
+    return None
 
 
 def get_input_dir():
     """返回当前要使用的输入文件夹。
-       - 默认路径存在 -> 直接返回
-       - 默认路径不存在 -> 在终端提示用户输入路径
+       - 默认路径存在 -> 直接返回（并记录）
+       - 不存在 -> 终端提示用户输入（也会记录所选）
        - 用户输入 'q' 或留空 -> 返回 None
     """
     if os.path.isdir(DEFAULT_INPUT_DIR):
+        _save_last_input(DEFAULT_INPUT_DIR)
         return DEFAULT_INPUT_DIR
+    # 默认路径找不到时，先看看上次记的能不能复用
+    last = peek_last_input_dir()
+    if last:
+        ans = input(f"Use last folder [{last}]? (Y/n): ").strip().lower()
+        if ans in ('', 'y'):
+            return last
     print(f"[INFO] default folder not found: {DEFAULT_INPUT_DIR}")
     while True:
         p = input("Enter input folder path (or 'q' to quit): ").strip().strip('"').strip("'")
         if not p or p.lower() == 'q':
             return None
         if os.path.isdir(p):
+            _save_last_input(p)
             return p
         print(f"  [WARN] not a directory: {p}")
 

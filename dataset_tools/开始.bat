@@ -3,20 +3,16 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set "SRC_DIR=C:\Users\pc\Desktop\p"
-
 :MENU
 cls
 echo ============================================
 echo   K230 dataset workflow
 echo ============================================
 echo.
-echo   Source folder: %SRC_DIR%  (auto-prompt if missing)
-echo.
-echo   [1] Auto-label  (p\*.jpg -^> dataset)
+echo   [1] Auto-label  (source photos -^> dataset)
 echo   [2] Manual fix  (review/edit boxes)
 echo   [3] Pack ZIP    (upload to AI Cube)
-echo   [4] Clear dataset folder
+echo   [4] Clear       (dataset, and/or source photos)
 echo   [5] HSV picker  (tune/add a class by clicking on the object)
 echo   [Q] Quit
 echo.
@@ -60,35 +56,7 @@ goto MENU
 
 :CLEAR
 echo.
-echo What to clear?
-echo   [1] dataset/ only (labels)
-echo   [2] dataset/ + source photos in %SRC_DIR%
-echo   [3] Cancel
-set /p sub="Choose: "
-if "%sub%"=="3" goto MENU
-if "%sub%"=="" goto MENU
-if not "%sub%"=="1" if not "%sub%"=="2" goto MENU
-
-set /p ok="Really clear? (y/N): "
-if /i not "%ok%"=="y" goto MENU
-
-if exist "dataset\images"     rmdir /s /q "dataset\images"
-if exist "dataset\xml"        rmdir /s /q "dataset\xml"
-if exist "dataset\labels.txt" del   /q   "dataset\labels.txt"
-echo dataset/ cleared.
-
-if "%sub%"=="2" (
-    if exist "%SRC_DIR%" (
-        del /q "%SRC_DIR%\*.jpg"  2>nul
-        del /q "%SRC_DIR%\*.jpeg" 2>nul
-        del /q "%SRC_DIR%\*.png"  2>nul
-        del /q "%SRC_DIR%\*.JPG"  2>nul
-        del /q "%SRC_DIR%\*.JPEG" 2>nul
-        del /q "%SRC_DIR%\*.PNG"  2>nul
-        echo Source photos in %SRC_DIR% deleted.
-    ) else (
-        echo %SRC_DIR% not found, skipped.
-    )
-)
+python _clear_helper.py
+echo.
 pause
 goto MENU
