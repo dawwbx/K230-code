@@ -44,6 +44,21 @@ DLG_NO_X = DLG_X + DLG_W - 110
 DLG_BTN_Y = DLG_Y + DLG_H - 45
 DLG_BTN_R = 32
 
+# 回放模式双击缩放
+ZOOM_LEVELS = [1.0, 2.0, 3.0]
+DOUBLE_TAP_MS = 400
+DOUBLE_TAP_DIST = 40
+
+
+def clamp_offset(zoom, ox, oy):
+    if zoom <= 1.0:
+        return 0, 0
+    pw = int(DISPLAY_WIDTH * zoom)
+    ph = int(DISPLAY_HEIGHT * zoom)
+    ox = max(DISPLAY_WIDTH - pw, min(0, ox))
+    oy = max(DISPLAY_HEIGHT - ph, min(0, oy))
+    return ox, oy
+
 
 def ensure_dir(path):
     try:
@@ -172,16 +187,50 @@ def gallery_mode(tp):
     last_evt_handled = False
     confirm_delete = False  # 删除确认弹窗状态
 
+    # 缩放/平移状态
+    zoom_idx = 0
+    offset_x = 0
+    offset_y = 0
+    last_tap_ms = 0
+    last_tap_x = -999
+    last_tap_y = -999
+    # 拖动状态
+    dragging = False
+    drag_last_x = 0
+    drag_last_y = 0
+    drag_start_x = 0
+    drag_start_y = 0
+    moved = False
+    # 当前照片源（用于平移时重新裁剪）
+    cur_photo = None
+    cur_photo_name = None
+
     while True:
         os.exitpoint()
 
-        # 只在切换照片/首次进入时重绘整张图 - 避免每帧 50ms 的加载开销
+        # 只在切换照片/缩放/平移时重绘 - 避免每帧 50ms 的加载开销
         if need_redraw:
             canvas.draw_rectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                   color=(0, 0, 0), fill=True)
             try:
-                photo = image.Image(SAVE_DIR + "/" + photos[idx])
-                canvas.draw_image(photo, 0, 0)
+                if cur_photo_name != photos[idx]:
+                    cur_photo = image.Image(SAVE_DIR + "/" + photos[idx])
+                    cur_photo_name = photos[idx]
+
+                zoom = ZOOM_LEVELS[zoom_idx]
+                if zoom <= 1.0:
+                    canvas.draw_image(cur_photo, 0, 0)
+                else:
+                    # 用 ROI 取放大后可见区域 + draw_image 的 x_scale/y_scale 拉伸到全屏
+                    src_w = int(DISPLAY_WIDTH / zoom)
+                    src_h = int(DISPLAY_HEIGHT / zoom)
+                    src_x = int(-offset_x / zoom)
+                    src_y = int(-offset_y / zoom)
+                    src_x = max(0, min(DISPLAY_WIDTH - src_w, src_x))
+                    src_y = max(0, min(DISPLAY_HEIGHT - src_h, src_y))
+                    canvas.draw_image(cur_photo, 0, 0,
+                                      x_scale=zoom, y_scale=zoom,
+                                      roi=(src_x, src_y, src_w, src_h))
             except Exception as e:
                 canvas.draw_string_advanced(260, 220, 20, "Load failed: " + str(e),
                                             color=(255, 100, 100))
@@ -189,7 +238,8 @@ def gallery_mode(tp):
             # UI
             canvas.draw_rectangle(0, DISPLAY_HEIGHT - 46, DISPLAY_WIDTH, 46,
                                   color=(0, 0, 0), fill=True)
-            info = "  {}/{}   {}".format(idx + 1, len(photos), photos[idx])
+            zoom_tag = "" if ZOOM_LEVELS[zoom_idx] <= 1.0 else "  [{}x]".format(int(ZOOM_LEVELS[zoom_idx]))
+            info = "  {}/{}   {}{}".format(idx + 1, len(photos), photos[idx], zoom_tag)
             canvas.draw_string_advanced(8, DISPLAY_HEIGHT - 38, 16, info, color=(255, 255, 255))
 
             canvas.draw_circle(LEFT_X, LEFT_Y, 28, color=(0, 100, 200), thickness=3, fill=True)
@@ -229,6 +279,20 @@ def gallery_mode(tp):
         p = tp.read(1)
         if p:
             x, y, evt = p[0].x, p[0].y, p[0].event
+
+            # 拖动平移：放大状态下，MOVE 事件累积位移
+            if (not confirm_delete) and ZOOM_LEVELS[zoom_idx] > 1.0 and evt == 3 and dragging:
+                dx = x - drag_last_x
+                dy = y - drag_last_y
+                if dx != 0 or dy != 0:
+                    offset_x, offset_y = clamp_offset(ZOOM_LEVELS[zoom_idx],
+                                                     offset_x + dx, offset_y + dy)
+                    drag_last_x, drag_last_y = x, y
+                    # 判定是否算作"拖动了"(超过阈值)，区分双击和拖动起手
+                    if abs(x - drag_start_x) > 6 or abs(y - drag_start_y) > 6:
+                        moved = True
+                    need_redraw = True
+
             if evt == 2 and not last_evt_handled:
                 last_evt_handled = True
                 if confirm_delete:
@@ -244,24 +308,69 @@ def gallery_mode(tp):
                             return "camera"
                         if idx >= len(photos):
                             idx = len(photos) - 1
+                        cur_photo_name = None  # 强制重载
+                        zoom_idx = 0
+                        offset_x = offset_y = 0
                         confirm_delete = False
                         need_redraw = True
                     elif ((x - DLG_NO_X) ** 2 + (y - DLG_BTN_Y) ** 2) <= DLG_BTN_R * DLG_BTN_R:
                         confirm_delete = False
                         need_redraw = True
                 else:
+                    # 优先判定按钮（在底部 UI 条区域 y >= DISPLAY_HEIGHT - 90 内才查按钮）
                     if ((x - LEFT_X) ** 2 + (y - LEFT_Y) ** 2) <= 900:
                         idx = (idx - 1) % len(photos)
+                        cur_photo_name = None
+                        zoom_idx = 0
+                        offset_x = offset_y = 0
                         need_redraw = True
                     elif ((x - RIGHT_X) ** 2 + (y - RIGHT_Y) ** 2) <= 900:
                         idx = (idx + 1) % len(photos)
+                        cur_photo_name = None
+                        zoom_idx = 0
+                        offset_x = offset_y = 0
                         need_redraw = True
                     elif ((x - BACK_X) ** 2 + (y - BACK_Y) ** 2) <= 1600:
                         return "camera"
                     elif ((x - DEL_X) ** 2 + (y - DEL_Y) ** 2) <= DEL_R * DEL_R:
                         confirm_delete = True
                         need_redraw = True
+                    else:
+                        # 图片区域按下 -> 开始拖动 + 准备判定双击
+                        dragging = True
+                        drag_last_x, drag_last_y = x, y
+                        drag_start_x, drag_start_y = x, y
+                        moved = False
         else:
+            # 抬手：如果没有拖动过且距上次抬手满足双击条件，则切换缩放
+            if last_evt_handled and dragging and not moved:
+                now = time.ticks_ms()
+                if (time.ticks_diff(now, last_tap_ms) < DOUBLE_TAP_MS and
+                    abs(drag_start_x - last_tap_x) < DOUBLE_TAP_DIST and
+                    abs(drag_start_y - last_tap_y) < DOUBLE_TAP_DIST):
+                    # 双击：切换到下一档，以双击点为中心
+                    prev_zoom = ZOOM_LEVELS[zoom_idx]
+                    zoom_idx = (zoom_idx + 1) % len(ZOOM_LEVELS)
+                    new_zoom = ZOOM_LEVELS[zoom_idx]
+                    if new_zoom <= 1.0:
+                        offset_x = offset_y = 0
+                    else:
+                        # 把双击点(显示坐标)在新缩放下保持在原位
+                        # 原图坐标: img_px = (tap - offset) / zoom
+                        # 新偏移:   new_offset = tap - img_px * new_zoom
+                        img_x = (drag_start_x - offset_x) / prev_zoom
+                        img_y = (drag_start_y - offset_y) / prev_zoom
+                        offset_x = int(drag_start_x - img_x * new_zoom)
+                        offset_y = int(drag_start_y - img_y * new_zoom)
+                        offset_x, offset_y = clamp_offset(new_zoom, offset_x, offset_y)
+                    last_tap_ms = 0  # 防止三连击被当成双击+双击
+                    need_redraw = True
+                else:
+                    last_tap_ms = now
+                    last_tap_x = drag_start_x
+                    last_tap_y = drag_start_y
+            dragging = False
+            moved = False
             last_evt_handled = False
 
         time.sleep_ms(20)
