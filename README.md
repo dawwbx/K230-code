@@ -18,7 +18,42 @@
 | `找蓝色物体.py` | LAB 色块检测 + 6 个 +/- 按钮调阈值，自动存盘 |
 | `找圆形测试.py` | 霍夫圆检测（320×240 加速）+ 3 个参数可调 |
 | `AI测试.py` | 加载预训练 YOLOv8n（COCO 80 类）实时推理 |
+| `det_uart.py` | **通用串口模块**：检测目标中心点 → UART2 发送，跨模型复用 |
 | `dataset_tools/` | 自定义训练数据流水线：拍照 → HSV 自动标 → 手动修正 → 打包上传 AI Cube |
+
+## det_uart.py 串口模块
+
+把检测脚本得到的目标中心点通过 01Studio 板背面 **XH-1.25mm-4P** 座子（UART2，GPIO11=TX2，GPIO12=RX2，3.3V 电平）发出去。
+
+**部署**：放到 `/sdcard/` **根目录**（K230 默认 `sys.path` 只含 `/sdcard/`，放子目录里 import 会失败）。
+
+**用法**：
+
+```python
+from det_uart import DetUart
+
+du = DetUart(display_size, rgb888p_size, baudrate=115200, debug=False)
+
+while True:
+    img = pl.get_frame()
+    res = det_app.run(img)
+    det_app.draw_result(pl.osd_img, res)
+    du.process(res, pl.osd_img)        # 一行：提取中心点 + 画十字 + 串口发送
+    pl.show_image()
+```
+
+**帧格式**（每目标 8 字节，大端）：
+
+```
+0x55 | id(1B) | cx(2B BE) | cy(2B BE) | count(1B) | 0x66
+```
+
+- `id`：从 1 起，画面**最左目标 = 1 号**
+- `cx/cy`：显示坐标系
+- `count`：当前帧目标总数
+- 无检测时不发送
+
+**接线**（USB-TTL 调试）：模块 RX ↔ 座子 TX2、GND ↔ GND，不要接 5V。
 
 ## 关键技术坑
 
@@ -28,6 +63,7 @@
 4. **`find_circles()` 在 800×480 只有 ~1 FPS**，必须降到 320×240 检测，结果按比例画到屏幕。
 5. **配置存盘优先 SD 卡** — `/flash` 在某些固件写入会 `[Errno 22] EINVAL`。
 6. **AI 推理时框对不上实物** — `RGB888P_SIZE` 必须和显示纵横比一致（如 800×480 = 5:3，则推理通道用 640×384），否则坐标线性映射会错位。
+7. **自定义模块要放 `/sdcard/` 根目录** — K230 默认 `sys.path` 不递归含子目录，放 `/sdcard/mp_deployment_source/` 里 import 会 `ImportError`。
 
 ## 运行方式
 
